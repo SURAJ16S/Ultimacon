@@ -1,0 +1,87 @@
+# Safety Configuration for Ultimate Reconnaissance Tool
+# This file controls safety features and authorization requirements
+
+# Authorization Requirements
+require_authorization: true
+max_targets_per_scan: 10
+require_scope_file: true
+
+# Rate Limiting and Stealth
+rate_limiting: true
+stealth_mode_default: true
+warn_external_targets: true
+
+# Target Restrictions
+block_private_ips: false
+block_localhost: false
+block_critical_infrastructure: true
+block_government_domains: false
+block_financial_domains: false
+
+# Safety Checks
+safety_checks: true
+interactive_confirmation: true
+display_warnings: true
+
+# Rate Limits
+rate_limits:
+  requests_per_second: 10
+  concurrent_connections: 5
+  delay_between_requests: 0.1
+
+# Stealth Settings
+stealth_settings:
+  randomize_user_agent: true
+  rotate_proxies: false
+  respect_robots_txt: true
+  follow_rate_limits: true
+
+# Critical Infrastructure Keywords
+critical_infrastructure_keywords:
+  - power
+  - energy
+  - grid
+  - nuclear
+  - water
+  - gas
+  - oil
+  - hospital
+  - medical
+  - emergency
+  - fire
+  - police
+  - military
+  - defense
+  - airport
+  - railway
+  - transport
+
+# Government Domains
+government_domains:
+  - .gov
+  - .mil
+  - .gov.uk
+  - .gouv.fr
+  - .gov.au
+  - .gov.ca
+  - .gov.de
+
+# Financial Keywords
+financial_keywords:
+  - bank
+  - credit
+  - finance
+  - insurance
+  - investment
+  - paypal
+  - stripe
+  - square
+  - venmo
+  - zelle
+
+# Excluded Targets (always blocked)
+excluded_targets:
+  - localhost
+  - 127.0.0.1
+  - ::1
+  - 0.0.0.0 

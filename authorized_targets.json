@@ -1,0 +1,58 @@
+{
+  "authorization_info": {
+    "client_name": "Example Client",
+    "project_name": "Security Assessment",
+    "authorization_date": "2024-01-01",
+    "authorized_by": "Client Security Team",
+    "scope_description": "Authorized security testing for example.com domain"
+  },
+  "authorized_targets": {
+    "domains": [
+      "example.com",
+      "*.example.com",
+      "test.example.com"
+    ],
+    "ips": [
+      "192.168.1.0/24",
+      "10.0.0.0/8"
+    ],
+    "networks": [
+      "192.168.1.0/24"
+    ],
+    "excluded_targets": [
+      "api.example.com",
+      "admin.example.com",
+      "production.example.com"
+    ]
+  },
+  "scope_limitations": {
+    "allowed_techniques": [
+      "passive_reconnaissance",
+      "port_scanning",
+      "vulnerability_assessment",
+      "subdomain_enumeration",
+      "directory_bruteforcing"
+    ],
+    "restricted_techniques": [
+      "exploitation",
+      "data_exfiltration",
+      "denial_of_service",
+      "password_bruteforcing"
+    ],
+    "rate_limits": {
+      "requests_per_second": 10,
+      "concurrent_connections": 5,
+      "max_targets_per_scan": 10
+    }
+  },
+  "reporting_requirements": {
+    "responsible_disclosure": true,
+    "report_deadline": "30 days",
+    "contact_information": "security@example.com",
+    "report_format": "PDF and JSON"
+  },
+  "scope_files": [
+    "scope.txt",
+    "authorized_domains.txt"
+  ]
+} 
