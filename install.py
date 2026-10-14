@@ -4,10 +4,8 @@ Installation Script for Ultimate Reconnaissance Tool
 Demonstrates setup and configuration functionality
 """
 
-import os
 import sys
 import subprocess
-import json
 from pathlib import Path
 
 def install_dependencies():
@@ -54,6 +52,8 @@ def run_setup():
         # Setup fallbacks
         fallback_manager = FallbackManager(api_keys)
         fallbacks = fallback_manager.setup_fallbacks()
+        if fallbacks:
+            print(f"✅ Configured {len(fallbacks)} fallback option(s) for missing API keys/tools")
         
         return True
     except ImportError as e:

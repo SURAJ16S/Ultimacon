@@ -4,9 +4,6 @@ Test script for crt.sh integration and certificate analysis
 """
 
 import sys
-import os
-import json
-from datetime import datetime
 
 # Add modules directory to path
 sys.path.append('modules')

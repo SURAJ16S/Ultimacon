@@ -5,20 +5,16 @@ Orchestrates all modules, handles configuration, and manages results
 """
 
 import os
-import sys
 import json
 import time
-import signal
 import threading
-import asyncio
 import importlib.util
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 import argparse
-from colorama import init, Fore, Back, Style
+from colorama import init, Fore, Style
 import yaml
-import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Initialize colorama
@@ -267,14 +263,34 @@ class CoreManager:
             }
         }
         
+        severity_keys = {
+            'critical': 'critical_findings',
+            'high': 'high_findings',
+            'medium': 'medium_findings',
+            'low': 'low_findings',
+        }
+        
         for module_name, results in self.results.items():
             aggregated['modules'][module_name] = results
             
-            # Count findings by severity
+            # Count findings by severity. This used to add every list's
+            # length to total_findings but never touch
+            # critical/high/medium/low_findings at all, even though modules
+            # like subdomain_takeover and certificate_analysis tag their
+            # findings with a 'severity' key - so the executive summary's
+            # severity breakdown always showed 0/0/0/0 no matter what was
+            # actually found. Now any dict item with a recognized
+            # 'severity' value is counted into the matching bucket too.
             if isinstance(results, dict):
                 for key, value in results.items():
                     if isinstance(value, list):
                         aggregated['summary']['total_findings'] += len(value)
+                        for item in value:
+                            if isinstance(item, dict):
+                                severity = str(item.get('severity', '')).lower()
+                                summary_key = severity_keys.get(severity)
+                                if summary_key:
+                                    aggregated['summary'][summary_key] += 1
         
         return aggregated
     
@@ -412,11 +428,20 @@ class CoreManager:
                 print(f"{Fore.YELLOW}[!] OSINT Dashboard module not available{Style.RESET_ALL}")
         
         try:
-            # Run all loaded modules
+            # Run all loaded modules, except utility modules that either have a
+            # different constructor/interface (fallback_manager) or are already
+            # started explicitly above (osint_dashboard) and would otherwise be
+            # launched a second time here.
+            excluded_from_generic_run = {'fallback_manager', 'osint_dashboard'}
+            runnable_modules = {
+                name: module_class
+                for name, module_class in self.modules.items()
+                if name not in excluded_from_generic_run
+            }
             with ThreadPoolExecutor(max_workers=self.config['threads']) as executor:
                 future_to_module = {
                     executor.submit(self.run_module, name, module_class): name
-                    for name, module_class in self.modules.items()
+                    for name, module_class in runnable_modules.items()
                 }
                 
                 for future in as_completed(future_to_module):

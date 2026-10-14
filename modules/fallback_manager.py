@@ -4,19 +4,12 @@ Fallback Manager Module
 Provides alternative methods when API keys are not available
 """
 
-import os
-import sys
-import json
-import time
 import requests
 import dns.resolver
 import socket
-import re
-from datetime import datetime
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from colorama import Fore, Style
-import subprocess
 
 class FallbackManager:
     """Manage fallback mechanisms for missing API keys"""
@@ -133,7 +126,7 @@ class FallbackManager:
                 if answers:
                     subdomains.add(full_domain)
                     print(f"{Fore.GREEN}[+] Found: {full_domain}{Style.RESET_ALL}")
-            except:
+            except Exception:  # narrowed from bare except: - a bare except also caught KeyboardInterrupt/SystemExit, making Ctrl+C unreliable during scans
                 continue
         
         return list(subdomains)
@@ -223,7 +216,7 @@ class FallbackManager:
                 hostname = socket.gethostbyaddr(ip)[0]
                 if self.target in hostname:
                     results['subdomains'].append(hostname)
-            except:
+            except Exception:  # narrowed from bare except: - a bare except also caught KeyboardInterrupt/SystemExit, making Ctrl+C unreliable during scans
                 continue
         
         return results
@@ -334,8 +327,24 @@ class FallbackManager:
         
         return results
     
-    def execute_fallback(self, service, query_type='general', **kwargs):
-        """Execute fallback method for a specific service"""
+    def execute_fallback(self, service, **kwargs):
+        """Execute fallback method for a specific service.
+
+        Each registered fallback method has a different signature
+        (free_internet_search(query_type=...), virustotal_public_search
+        (domain=...), dns_resolution_search() with no args,
+        email_pattern_guess(domain=...), header_analysis(url=...)). This
+        used to always call fallback['method'](query_type, **kwargs) with
+        query_type positional - which happened to line up for
+        free_internet_search but was wrong for every other fallback:
+        dns_resolution_search() takes no positional argument at all (always
+        raised TypeError), and virustotal_public_search/email_pattern_guess
+        would silently treat the literal string 'general' as the domain to
+        look up, or raise "got multiple values for argument" if a caller
+        also passed domain= as a kwarg. Callers now pass whichever keyword
+        argument the target method actually expects (query_type=, domain=,
+        or url=), and dns_resolution_search works correctly with none.
+        """
         if service not in self.fallbacks:
             return None
         
@@ -345,7 +354,7 @@ class FallbackManager:
         
         try:
             print(f"{Fore.YELLOW}[*] Using {service} fallback: {fallback['description']}{Style.RESET_ALL}")
-            return fallback['method'](query_type, **kwargs)
+            return fallback['method'](**kwargs)
         except Exception as e:
             print(f"{Fore.RED}[-] Fallback error for {service}: {e}{Style.RESET_ALL}")
             return None

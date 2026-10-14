@@ -4,24 +4,11 @@ Cloud Bucket Enumeration Module
 Comprehensive cloud bucket misconfiguration detection and enumeration
 """
 
-import os
-import sys
-import json
 import time
 import requests
-import boto3
 import re
-from urllib.parse import urljoin, urlparse
-from typing import Dict, List, Any, Optional, Tuple
-from colorama import Fore, Style
-import asyncio
-import aiohttp
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from botocore.exceptions import ClientError, NoCredentialsError
-import azure.storage.blob
-from azure.storage.blob import BlobServiceClient
-from google.cloud import storage
-from google.cloud.exceptions import NotFound
+from colorama import Fore, Style
 
 class CloudBucketEnum:
     def __init__(self, target, config, wordlists, api_keys):
@@ -78,6 +65,32 @@ class CloudBucketEnum:
             'requirements.txt', 'package.json', 'composer.json', 'Dockerfile'
         ]
         
+    def _run_concurrent(self, bucket_names, test_func, label):
+        """Test a list of bucket names against test_func concurrently.
+
+        The original code tested every bucket name serially, one HTTP
+        request chain at a time, across all 9 providers. With ~500
+        generated candidate names and up to ~10 endpoints tried per name
+        for some providers, a single scan could issue 10,000+ sequential
+        blocking requests - realistically hours to complete. This runs each
+        bucket-name test on a thread pool instead (sized from the same
+        config['threads'] setting the other recon modules use, capped at 20
+        to stay reasonably polite to third-party cloud endpoints).
+        """
+        results = []
+        max_workers = max(1, min(self.config.get('threads', 20), 20))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_name = {executor.submit(test_func, name): name for name in bucket_names}
+            for future in as_completed(future_to_name):
+                name = future_to_name[future]
+                try:
+                    result = future.result()
+                    if result:
+                        results.append(result)
+                except Exception as e:
+                    print(f"{Fore.RED}[-] Error testing {label} {name}: {e}{Style.RESET_ALL}")
+        return results
+    
     def run(self):
         """Main execution method"""
         print(f"{Fore.MAGENTA}[*] Running Cloud Bucket Enumeration...{Style.RESET_ALL}")
@@ -169,29 +182,27 @@ class CloudBucketEnum:
             f"{domain_parts[0]}-mirror",
             f"{domain_parts[0]}-replica",
             f"{domain_parts[0]}-snapshot",
-            f"{domain_parts[0]}-backup-{int(time.time())}",
-            f"{domain_parts[0]}-{int(time.time())}",
-            f"{domain_parts[0]}-{time.strftime('%Y%m%d')}",
-            f"{domain_parts[0]}-{time.strftime('%Y%m')}",
             f"{domain_parts[0]}-{time.strftime('%Y')}",
         ]
         
-        # Add common variations
+        # Add common variations. This used to also generate a timestamp-exact
+        # suffix (f"-{int(time.time())}") which can, by construction, never
+        # match a bucket that already exists - it's the current Unix
+        # timestamp down to the second, so it was pure wasted requests - and
+        # 4 numeric suffixes + 4 "-old/-new/-current/-latest" suffixes per
+        # pattern on top of the case/separator variants. Combined with ~40
+        # base patterns that multiplied out to ~440 candidate names, each
+        # tested against up to ~30 endpoints across 9 providers: a single
+        # scan could issue 10,000+ HTTP requests. Trimmed to the
+        # higher-signal variants only.
         for pattern in patterns:
             bucket_names.extend([
                 pattern,
                 pattern.lower(),
                 pattern.replace('-', ''),
                 pattern.replace('-', '_'),
-                pattern.replace('_', '-'),
-                f"{pattern}1",
-                f"{pattern}2",
-                f"{pattern}01",
-                f"{pattern}02",
+                f"{pattern}-backup",
                 f"{pattern}-old",
-                f"{pattern}-new",
-                f"{pattern}-current",
-                f"{pattern}-latest"
             ])
         
         # Remove duplicates and invalid names
@@ -222,18 +233,7 @@ class CloudBucketEnum:
     def enumerate_aws_buckets(self, bucket_names):
         """Enumerate AWS S3 buckets"""
         print(f"{Fore.YELLOW}[*] Enumerating AWS S3 buckets...{Style.RESET_ALL}")
-        results = []
-        
-        for bucket_name in bucket_names:
-            try:
-                bucket_result = self.test_aws_bucket(bucket_name)
-                if bucket_result:
-                    results.append(bucket_result)
-                    
-            except Exception as e:
-                print(f"{Fore.RED}[-] Error testing AWS bucket {bucket_name}: {e}{Style.RESET_ALL}")
-        
-        return results
+        return self._run_concurrent(bucket_names, self.test_aws_bucket, "AWS bucket")
     
     def test_aws_bucket(self, bucket_name):
         """Test AWS S3 bucket for access and misconfigurations"""
@@ -299,18 +299,7 @@ class CloudBucketEnum:
     def enumerate_azure_blobs(self, bucket_names):
         """Enumerate Azure Blob Storage containers"""
         print(f"{Fore.YELLOW}[*] Enumerating Azure Blob Storage...{Style.RESET_ALL}")
-        results = []
-        
-        for bucket_name in bucket_names:
-            try:
-                blob_result = self.test_azure_blob(bucket_name)
-                if blob_result:
-                    results.append(blob_result)
-                    
-            except Exception as e:
-                print(f"{Fore.RED}[-] Error testing Azure blob {bucket_name}: {e}{Style.RESET_ALL}")
-        
-        return results
+        return self._run_concurrent(bucket_names, self.test_azure_blob, "Azure blob")
     
     def test_azure_blob(self, bucket_name):
         """Test Azure Blob Storage container for access"""
@@ -367,18 +356,7 @@ class CloudBucketEnum:
     def enumerate_gcp_buckets(self, bucket_names):
         """Enumerate GCP Storage buckets"""
         print(f"{Fore.YELLOW}[*] Enumerating GCP Storage buckets...{Style.RESET_ALL}")
-        results = []
-        
-        for bucket_name in bucket_names:
-            try:
-                bucket_result = self.test_gcp_bucket(bucket_name)
-                if bucket_result:
-                    results.append(bucket_result)
-                    
-            except Exception as e:
-                print(f"{Fore.RED}[-] Error testing GCP bucket {bucket_name}: {e}{Style.RESET_ALL}")
-        
-        return results
+        return self._run_concurrent(bucket_names, self.test_gcp_bucket, "GCP bucket")
     
     def test_gcp_bucket(self, bucket_name):
         """Test GCP Storage bucket for access"""
@@ -436,18 +414,7 @@ class CloudBucketEnum:
     def enumerate_digitalocean_spaces(self, bucket_names):
         """Enumerate DigitalOcean Spaces"""
         print(f"{Fore.YELLOW}[*] Enumerating DigitalOcean Spaces...{Style.RESET_ALL}")
-        results = []
-        
-        for bucket_name in bucket_names:
-            try:
-                space_result = self.test_digitalocean_space(bucket_name)
-                if space_result:
-                    results.append(space_result)
-                    
-            except Exception as e:
-                print(f"{Fore.RED}[-] Error testing DigitalOcean space {bucket_name}: {e}{Style.RESET_ALL}")
-        
-        return results
+        return self._run_concurrent(bucket_names, self.test_digitalocean_space, "DigitalOcean space")
     
     def test_digitalocean_space(self, bucket_name):
         """Test DigitalOcean Space for access"""
@@ -484,18 +451,7 @@ class CloudBucketEnum:
     def enumerate_cloudflare_r2(self, bucket_names):
         """Enumerate Cloudflare R2 buckets"""
         print(f"{Fore.YELLOW}[*] Enumerating Cloudflare R2 buckets...{Style.RESET_ALL}")
-        results = []
-        
-        for bucket_name in bucket_names:
-            try:
-                r2_result = self.test_cloudflare_r2(bucket_name)
-                if r2_result:
-                    results.append(r2_result)
-                    
-            except Exception as e:
-                print(f"{Fore.RED}[-] Error testing Cloudflare R2 bucket {bucket_name}: {e}{Style.RESET_ALL}")
-        
-        return results
+        return self._run_concurrent(bucket_names, self.test_cloudflare_r2, "Cloudflare R2 bucket")
     
     def test_cloudflare_r2(self, bucket_name):
         """Test Cloudflare R2 bucket for access"""
@@ -530,18 +486,7 @@ class CloudBucketEnum:
     def enumerate_backblaze_b2(self, bucket_names):
         """Enumerate Backblaze B2 buckets"""
         print(f"{Fore.YELLOW}[*] Enumerating Backblaze B2 buckets...{Style.RESET_ALL}")
-        results = []
-        
-        for bucket_name in bucket_names:
-            try:
-                b2_result = self.test_backblaze_b2(bucket_name)
-                if b2_result:
-                    results.append(b2_result)
-                    
-            except Exception as e:
-                print(f"{Fore.RED}[-] Error testing Backblaze B2 bucket {bucket_name}: {e}{Style.RESET_ALL}")
-        
-        return results
+        return self._run_concurrent(bucket_names, self.test_backblaze_b2, "Backblaze B2 bucket")
     
     def test_backblaze_b2(self, bucket_name):
         """Test Backblaze B2 bucket for access"""
@@ -576,18 +521,7 @@ class CloudBucketEnum:
     def enumerate_wasabi_buckets(self, bucket_names):
         """Enumerate Wasabi buckets"""
         print(f"{Fore.YELLOW}[*] Enumerating Wasabi buckets...{Style.RESET_ALL}")
-        results = []
-        
-        for bucket_name in bucket_names:
-            try:
-                wasabi_result = self.test_wasabi_bucket(bucket_name)
-                if wasabi_result:
-                    results.append(wasabi_result)
-                    
-            except Exception as e:
-                print(f"{Fore.RED}[-] Error testing Wasabi bucket {bucket_name}: {e}{Style.RESET_ALL}")
-        
-        return results
+        return self._run_concurrent(bucket_names, self.test_wasabi_bucket, "Wasabi bucket")
     
     def test_wasabi_bucket(self, bucket_name):
         """Test Wasabi bucket for access"""
@@ -623,28 +557,21 @@ class CloudBucketEnum:
     def enumerate_minio_buckets(self, bucket_names):
         """Enumerate MinIO buckets"""
         print(f"{Fore.YELLOW}[*] Enumerating MinIO buckets...{Style.RESET_ALL}")
-        results = []
-        
-        for bucket_name in bucket_names:
-            try:
-                minio_result = self.test_minio_bucket(bucket_name)
-                if minio_result:
-                    results.append(minio_result)
-                    
-            except Exception as e:
-                print(f"{Fore.RED}[-] Error testing MinIO bucket {bucket_name}: {e}{Style.RESET_ALL}")
-        
-        return results
+        return self._run_concurrent(bucket_names, self.test_minio_bucket, "MinIO bucket")
     
     def test_minio_bucket(self, bucket_name):
         """Test MinIO bucket for access"""
         try:
-            # Common MinIO endpoints
+            # MinIO has no public multi-tenant hostname pattern the way S3,
+            # Azure Blob and GCS do (no "bucket.minio.com" namespace exists),
+            # so the only way to find a self-hosted MinIO instance is to
+            # probe the scan target itself on MinIO's default port. The
+            # previous version always queried localhost:9000/minio:9000 -
+            # i.e. the machine running the scan, never the actual target -
+            # so this check could never find anything real about the target.
             endpoints = [
-                f"http://localhost:9000/{bucket_name}",
-                f"https://localhost:9000/{bucket_name}",
-                f"http://minio:9000/{bucket_name}",
-                f"https://minio:9000/{bucket_name}"
+                f"http://{self.target}:9000/{bucket_name}",
+                f"https://{self.target}:9000/{bucket_name}",
             ]
             
             for endpoint in endpoints:
@@ -672,26 +599,21 @@ class CloudBucketEnum:
     def enumerate_openstack_containers(self, bucket_names):
         """Enumerate OpenStack containers"""
         print(f"{Fore.YELLOW}[*] Enumerating OpenStack containers...{Style.RESET_ALL}")
-        results = []
-        
-        for bucket_name in bucket_names:
-            try:
-                openstack_result = self.test_openstack_container(bucket_name)
-                if openstack_result:
-                    results.append(openstack_result)
-                    
-            except Exception as e:
-                print(f"{Fore.RED}[-] Error testing OpenStack container {bucket_name}: {e}{Style.RESET_ALL}")
-        
-        return results
+        return self._run_concurrent(bucket_names, self.test_openstack_container, "OpenStack container")
     
     def test_openstack_container(self, bucket_name):
         """Test OpenStack container for access"""
         try:
-            # Common OpenStack endpoints
+            # Same issue as MinIO above: OpenStack Swift has no universal
+            # public multi-tenant hostname pattern, so the only viable guess
+            # without a known Swift auth endpoint is the target's own host.
+            # The previous version hardcoded "swift.example.com" and
+            # "object-storage.example.com" - example.com is IANA's reserved
+            # documentation domain, so this check could never return a real
+            # finding about the actual target.
             endpoints = [
-                f"https://swift.example.com/{bucket_name}",
-                f"https://object-storage.example.com/{bucket_name}"
+                f"https://{self.target}/v1/{bucket_name}",
+                f"https://{self.target}/swift/v1/{bucket_name}",
             ]
             
             for endpoint in endpoints:

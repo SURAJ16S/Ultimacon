@@ -4,18 +4,11 @@ Certificate Analysis Module
 Comprehensive certificate transparency analysis using crt.sh and other CT logs
 """
 
-import os
-import sys
 import json
 import time
 import requests
-import re
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Set
 from colorama import Fore, Style
-import asyncio
-import aiohttp
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class CertificateAnalysis:
     def __init__(self, target, config, wordlists, api_keys):
@@ -81,6 +74,7 @@ class CertificateAnalysis:
         ]
         
         all_certificates = []
+        seen_ids = set()
         
         for pattern in search_patterns:
             try:
@@ -89,8 +83,21 @@ class CertificateAnalysis:
                 
                 if resp.status_code == 200:
                     data = resp.json()
-                    all_certificates.extend(data)
-                    print(f"{Fore.GREEN}[+] Found {len(data)} certificates for pattern: {pattern}{Style.RESET_ALL}")
+                    # The four search patterns overlap heavily (e.g. "%.target"
+                    # and "*.target" return largely the same certs from crt.sh),
+                    # so without deduping by certificate id every downstream
+                    # metric (total count, duplicate groups, weak-cert %, etc.)
+                    # was inflated by counting the same certificate 2-4 times.
+                    new_count = 0
+                    for cert in data:
+                        cert_id = cert.get('id')
+                        if cert_id is not None and cert_id in seen_ids:
+                            continue
+                        if cert_id is not None:
+                            seen_ids.add(cert_id)
+                        all_certificates.append(cert)
+                        new_count += 1
+                    print(f"{Fore.GREEN}[+] Found {new_count} new certificates for pattern: {pattern}{Style.RESET_ALL}")
                 
                 time.sleep(1)  # Rate limiting
                 
@@ -226,16 +233,24 @@ class CertificateAnalysis:
             if '*' in cert.get('name_value', ''):
                 issues.append("Wildcard certificate")
             
-            # Check for specific weak issuers
-            weak_issuers = [
-                'Let\'s Encrypt',  # Often used for testing
-                'DigiCert Inc',
-                'Comodo CA Limited'
+            # Check for genuinely distrusted/deprecated issuers. The previous
+            # version of this check flagged Let's Encrypt, DigiCert, and
+            # Comodo as "weak issuers" - these are major, trusted CAs, so
+            # that produced an incorrect/misleading finding in every report.
+            # What's actually worth flagging: certs from CAs that browsers
+            # have formally distrusted, and self-signed certs (issuer == subject).
+            distrusted_issuers = [
+                'Symantec',       # Distrusted by Chrome/Firefox in 2018
+                'WoSign',         # Distrusted in 2016-2017 over mis-issuance
+                'StartCom',       # Distrusted alongside WoSign (same parent company)
             ]
             
             issuer = cert.get('issuer_name', '')
-            if any(weak_issuer in issuer for weak_issuer in weak_issuers):
-                issues.append(f"Weak issuer: {issuer}")
+            name_value = cert.get('name_value', '')
+            if any(bad_issuer in issuer for bad_issuer in distrusted_issuers):
+                issues.append(f"Distrusted CA: {issuer}")
+            if issuer and name_value and issuer.strip() == name_value.strip():
+                issues.append("Possibly self-signed certificate (issuer matches subject)")
             
             # Check for expired certificates
             try:
@@ -364,9 +379,14 @@ class CertificateAnalysis:
             'expiry_analysis': self.results['expiry_analysis']
         }
         
-        # Calculate additional metrics
-        if metrics['total_certificates'] > 0:
+        # Calculate additional metrics. Guard each division separately:
+        # total_certificates > 0 does NOT guarantee unique_issuers > 0 (every
+        # cert could have an empty issuer_name field from crt.sh), so the old
+        # single "if total_certificates > 0" guard still let
+        # total/unique_issuers raise ZeroDivisionError and crash the module.
+        if metrics['unique_issuers'] > 0:
             metrics['avg_certificates_per_issuer'] = metrics['total_certificates'] / metrics['unique_issuers']
+        if metrics['total_certificates'] > 0:
             metrics['weak_certificate_percentage'] = (metrics['weak_certificates'] / metrics['total_certificates']) * 100
             metrics['wildcard_percentage'] = (metrics['wildcard_certificates'] / metrics['total_certificates']) * 100
         

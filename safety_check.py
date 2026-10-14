@@ -8,11 +8,8 @@ import os
 import sys
 import json
 import yaml
-from datetime import datetime
 from colorama import init, Fore, Style
 import ipaddress
-import socket
-import requests
 
 # Initialize colorama
 init(autoreset=True)
@@ -101,7 +98,7 @@ class SafetyChecker:
             try:
                 if ipaddress.ip_address(target) in ipaddress.ip_network(network):
                     return True
-            except:
+            except Exception:  # narrowed from bare except: - a bare except also caught KeyboardInterrupt/SystemExit, making Ctrl+C unreliable during scans
                 continue
         
         return False
@@ -178,7 +175,7 @@ class SafetyChecker:
         try:
             ip = ipaddress.ip_address(target)
             return ip.is_private
-        except:
+        except Exception:  # narrowed from bare except: - a bare except also caught KeyboardInterrupt/SystemExit, making Ctrl+C unreliable during scans
             return False
     
     def is_critical_infrastructure(self, target):

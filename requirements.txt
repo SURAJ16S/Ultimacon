@@ -1,63 +1,32 @@
 # Ultimate Reconnaissance Tool Dependencies
+# Trimmed to match what the code actually imports (verified with pyflakes).
+# Previous versions listed ~15 packages (selenium, scrapy, scikit-learn,
+# pandas, pymongo, psycopg2-binary, mysql-connector-python, paramiko, pysmb,
+# impacket, plotly, jinja2, pytest, black, flake8, azure-mgmt-compute) that
+# were never imported anywhere, and was missing psutil / flask /
+# flask-socketio which ARE imported. `pip install -r requirements.txt` now
+# installs everything the tool needs and nothing it doesn't.
 
-# Core dependencies
+# Core
 requests>=2.28.0
 dnspython>=2.2.0
 python-whois>=0.8.0
 beautifulsoup4>=4.11.0
-lxml>=4.9.0
 urllib3>=1.26.0
 cryptography>=3.4.0
-
-# Network and scanning
-python-nmap>=0.7.1
-shodan>=1.28.0
-censys>=2.2.0
-
-# Async support
-aiohttp>=3.8.0
-aiodns>=3.0.0
-aiofiles>=0.8.0
-
-# Data processing
 pyyaml>=6.0
 colorama>=0.4.5
-tqdm>=4.64.0
 
-# OSINT and intelligence
-virustotal-api>=1.1.11
-haveibeenpwned>=0.2.0
-
-# Web scraping and parsing
-selenium>=4.0.0
-scrapy>=2.5.0
-
-# Machine learning and AI (optional)
-scikit-learn>=1.1.0
-numpy>=1.21.0
-pandas>=1.4.0
-
-# Database support
-pymongo>=4.0.0
-psycopg2-binary>=2.9.0
-mysql-connector-python>=8.0.0
-
-# Cloud and infrastructure
-boto3>=1.24.0
-azure-mgmt-compute>=29.0.0
-google-cloud-storage>=2.0.0
-
-# Security and cryptography
-paramiko>=2.10.0
-pysmb>=1.2.9
-impacket>=0.10.0
-
-# Reporting and visualization
+# System checks / performance monitoring
+psutil>=5.9.0
 matplotlib>=3.5.0
-plotly>=5.10.0
-jinja2>=3.1.0
+numpy>=1.21.0
 
-# Development and testing
-pytest>=7.0.0
-black>=22.0.0
-flake8>=4.0.0 
+# OSINT dashboard (modules/osint_dashboard.py)
+flask>=2.2.0
+flask-socketio>=5.3.0
+
+# Optional: enables richer results when installed; code already degrades
+# gracefully (try/except around the import site) if these are missing.
+python-nmap>=0.7.1    # used by modules/active_recon.py for Nmap scans
+shodan>=1.28.0         # used by modules/passive_recon.py when an API key is set

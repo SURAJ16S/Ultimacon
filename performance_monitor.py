@@ -10,8 +10,7 @@ import time
 import psutil
 import threading
 import json
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
+from datetime import datetime
 import argparse
 from colorama import Fore, Style
 import matplotlib.pyplot as plt
@@ -143,7 +142,8 @@ class PerformanceMonitor:
         """Monitor disk usage"""
         while self.monitoring:
             try:
-                disk_usage = psutil.disk_usage('/')
+                # See setup.py for why '/' doesn't work on Windows here.
+                disk_usage = psutil.disk_usage(os.path.abspath(os.sep))
                 disk_io = psutil.disk_io_counters()
                 
                 self.disk_metrics.append({
@@ -336,10 +336,12 @@ class PerformanceMonitor:
             
             plt.figure(figsize=(12, 8))
             
-            # CPU chart
+            # CPU chart (x-axis uses elapsed seconds since monitoring started)
+            elapsed = [t - timestamps[0] for t in timestamps] if timestamps else list(range(len(cpu_values)))
             plt.subplot(2, 2, 1)
-            plt.plot(range(len(cpu_values)), cpu_values, 'b-', linewidth=1)
+            plt.plot(elapsed, cpu_values, 'b-', linewidth=1)
             plt.title('CPU Usage Over Time')
+            plt.xlabel('Elapsed Time (s)')
             plt.ylabel('CPU Usage (%)')
             plt.grid(True, alpha=0.3)
             

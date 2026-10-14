@@ -1,0 +1,46 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and output
+*.log
+logs/
+results/
+reports/
+
+# Local configurations and secrets
+api_keys.json
+config.yaml
+wordlists_config.json
+
+# Local wordlists
+wordlists/
+
+# Diagnostics, performance and temporary files
+system_check_results.json
+authorization_template.json
+performance_metrics.json
+performance_*.png
+modules/templates/

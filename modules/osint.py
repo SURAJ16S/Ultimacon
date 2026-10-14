@@ -4,22 +4,12 @@ Advanced OSINT Module
 Comprehensive OSINT gathering including email leaks, social profiles, breach data, and historical artifacts
 """
 
-import os
-import sys
-import json
 import time
 import requests
 import re
-import hashlib
-import base64
-from datetime import datetime, timedelta
-from urllib.parse import urljoin, urlparse, quote
+from urllib.parse import quote
 from bs4 import BeautifulSoup
 from colorama import Fore, Style
-import asyncio
-import aiohttp
-import aiofiles
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class Osint:
     def __init__(self, target, config, wordlists, api_keys):
@@ -65,14 +55,26 @@ class Osint:
         # Job postings analysis
         self.results['job_postings'] = self.analyze_job_postings()
         
-        # Forum mentions
-        self.results['forum_mentions'] = self.search_forum_mentions()
+        # Each external source below (Reddit, Stack Overflow, Pastebin,
+        # Wayback Machine, CommonCrawl) used to be queried TWICE per scan:
+        # once through an aggregate method (search_forum_mentions(),
+        # search_paste_dumps(), gather_historical_data()) that re-implemented
+        # the same request inline, and again through the single-source
+        # method with the identical URL (reddit_search(), etc.). That
+        # doubled this module's external request volume for no benefit and
+        # increased the chance of getting rate-limited by Reddit/GitHub.
+        # Each source is now queried once and reused for both the
+        # individual result key and the combined aggregate key.
+        self.results['reddit_mentions'] = self.reddit_search()
+        self.results['stackoverflow_mentions'] = self.stackoverflow_search()
+        self.results['forum_mentions'] = self.results['reddit_mentions'] + self.results['stackoverflow_mentions']
         
-        # Paste dumps
-        self.results['paste_dumps'] = self.search_paste_dumps()
+        self.results['pastebin_data'] = self.pastebin_search()
+        self.results['paste_dumps'] = self.results['pastebin_data']
         
-        # Historical data gathering
-        self.results['historical_data'] = self.gather_historical_data()
+        self.results['wayback_data'] = self.wayback_machine_search()
+        self.results['commoncrawl_data'] = self.commoncrawl_search()
+        self.results['historical_data'] = self.results['wayback_data'] + self.results['commoncrawl_data']
         
         # Breach data analysis
         self.results['breach_data'] = self.analyze_breach_data()
@@ -86,23 +88,8 @@ class Osint:
         # Twitter intelligence
         self.results['twitter_intel'] = self.twitter_intelligence()
         
-        # Wayback Machine data
-        self.results['wayback_data'] = self.wayback_machine_search()
-        
-        # CommonCrawl data
-        self.results['commoncrawl_data'] = self.commoncrawl_search()
-        
-        # Pastebin data
-        self.results['pastebin_data'] = self.pastebin_search()
-        
         # GitHub Gist data
         self.results['gist_data'] = self.gist_search()
-        
-        # Reddit mentions
-        self.results['reddit_mentions'] = self.reddit_search()
-        
-        # Stack Overflow mentions
-        self.results['stackoverflow_mentions'] = self.stackoverflow_search()
         
         # Employee data gathering
         self.results['employee_data'] = self.gather_employee_data()
@@ -223,7 +210,7 @@ class Osint:
         patterns = [
             'admin', 'info', 'contact', 'support', 'help', 'webmaster',
             'root', 'test', 'mail', 'sales', 'marketing', 'hr', 'jobs',
-            'security', 'dev', 'developer', 'admin', 'user', 'guest'
+            'security', 'dev', 'developer', 'user', 'guest'
         ]
         
         for pattern in patterns:
@@ -353,95 +340,6 @@ class Osint:
             print(f"{Fore.RED}[-] Indeed jobs error: {e}{Style.RESET_ALL}")
         
         return job_data
-    
-    def search_forum_mentions(self):
-        """Search for forum mentions"""
-        print(f"{Fore.YELLOW}[*] Searching forum mentions...{Style.RESET_ALL}")
-        mentions = []
-        
-        # Reddit
-        try:
-            url = f"https://www.reddit.com/search.json?q={quote(self.target)}&sort=new&t=all"
-            headers = {'User-Agent': 'UltimateReconTool/1.0'}
-            resp = self.session.get(url, headers=headers, timeout=30)
-            if resp.status_code == 200:
-                data = resp.json()
-                if 'data' in data and 'children' in data['data']:
-                    for post in data['data']['children'][:10]:
-                        post_data = post['data']
-                        mentions.append({
-                            'platform': 'Reddit',
-                            'title': post_data.get('title', ''),
-                            'author': post_data.get('author', ''),
-                            'subreddit': post_data.get('subreddit', ''),
-                            'url': f"https://reddit.com{post_data.get('permalink', '')}",
-                            'score': post_data.get('score', 0),
-                            'created': datetime.fromtimestamp(post_data.get('created_utc', 0))
-                        })
-        except Exception as e:
-            print(f"{Fore.RED}[-] Reddit search error: {e}{Style.RESET_ALL}")
-        
-        # Stack Overflow
-        try:
-            url = f"https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=activity&q={quote(self.target)}&site=stackoverflow"
-            resp = self.session.get(url, timeout=30)
-            if resp.status_code == 200:
-                data = resp.json()
-                if 'items' in data:
-                    for item in data['items'][:10]:
-                        mentions.append({
-                            'platform': 'Stack Overflow',
-                            'title': item.get('title', ''),
-                            'author': item.get('owner', {}).get('display_name', ''),
-                            'url': item.get('link', ''),
-                            'score': item.get('score', 0),
-                            'created': datetime.fromtimestamp(item.get('creation_date', 0))
-                        })
-        except Exception as e:
-            print(f"{Fore.RED}[-] Stack Overflow search error: {e}{Style.RESET_ALL}")
-        
-        return mentions
-    
-    def search_paste_dumps(self):
-        """Search paste dumps for target mentions"""
-        print(f"{Fore.YELLOW}[*] Searching paste dumps...{Style.RESET_ALL}")
-        dumps = []
-        
-        # Pastebin search
-        try:
-            url = f"https://pastebin.com/search?q={quote(self.target)}"
-            resp = self.session.get(url, timeout=30)
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                paste_links = soup.find_all('a', href=re.compile(r'/raw/'))
-                
-                for link in paste_links[:5]:  # Limit to 5 results
-                    paste_url = f"https://pastebin.com{link['href']}"
-                    paste_id = link['href'].split('/')[-1]
-                    
-                    dumps.append({
-                        'platform': 'Pastebin',
-                        'url': paste_url,
-                        'paste_id': paste_id,
-                        'title': link.get_text(strip=True)
-                    })
-        except Exception as e:
-            print(f"{Fore.RED}[-] Pastebin search error: {e}{Style.RESET_ALL}")
-        
-        return dumps
-    
-    def gather_historical_data(self):
-        """Gather historical data from multiple sources"""
-        print(f"{Fore.YELLOW}[*] Gathering historical data...{Style.RESET_ALL}")
-        historical = []
-        
-        # Wayback Machine
-        historical.extend(self.wayback_machine_search())
-        
-        # CommonCrawl
-        historical.extend(self.commoncrawl_search())
-        
-        return historical
     
     def wayback_machine_search(self):
         """Search Wayback Machine for historical data"""
@@ -684,8 +582,8 @@ class Osint:
             url = f"https://www.linkedin.com/search/results/people/?keywords={quote(self.target)}"
             resp = self.session.get(url, timeout=30)
             if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, 'html.parser')
                 # Note: LinkedIn has anti-scraping measures, this is a simplified version
+                # that just confirms reachability rather than parsing results.
                 employees.append({
                     'source': 'LinkedIn',
                     'note': 'Employee data available (requires authentication)',
