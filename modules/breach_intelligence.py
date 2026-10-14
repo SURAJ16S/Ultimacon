@@ -4,17 +4,9 @@ Breach Intelligence Module
 Comprehensive breach data gathering from multiple sources
 """
 
-import os
-import json
 import time
-import hashlib
 import requests
-import asyncio
-import aiohttp
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
 from colorama import Fore, Style
-import re
 
 class BreachIntelligence:
     def __init__(self, target, config, wordlists, api_keys):
@@ -377,7 +369,7 @@ class BreachIntelligence:
         patterns = [
             'admin', 'info', 'contact', 'support', 'help', 'webmaster',
             'root', 'test', 'mail', 'sales', 'marketing', 'hr', 'jobs',
-            'security', 'dev', 'developer', 'admin', 'user', 'guest',
+            'security', 'dev', 'developer', 'user', 'guest',
             'service', 'noreply', 'postmaster', 'hostmaster', 'abuse'
         ]
         
@@ -421,11 +413,21 @@ class BreachIntelligence:
         
         self.results['password_leaks'] = all_password_leaks
         
-        # Aggregate domain breaches
+        # Aggregate domain breaches. Previously used a plain substring check
+        # ("self.target in email"), which false-matches unrelated domains
+        # that merely share a substring with the target - e.g. a target of
+        # "example.com" would match "notexample.com" or "example.company".
+        # Now requires the email's domain part to equal the target (or be a
+        # subdomain of it), the same logic used elsewhere in the project for
+        # matching subdomains to the target domain.
         all_domain_breaches = []
         for source_results in [self.results['hibp_results'], self.results['dehashed_results']]:
             for result in source_results:
-                if self.target in result.get('email', '') or self.target in result.get('domain', ''):
+                email_domain = result.get('email', '').split('@')[-1].lower()
+                domain_field = result.get('domain', '').lower()
+                target_lower = self.target.lower()
+                if (email_domain == target_lower or email_domain.endswith(f'.{target_lower}') or
+                        domain_field == target_lower or domain_field.endswith(f'.{target_lower}')):
                     all_domain_breaches.append(result)
         
         self.results['domain_breaches'] = all_domain_breaches

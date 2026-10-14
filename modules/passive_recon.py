@@ -5,9 +5,6 @@ Performs comprehensive passive reconnaissance including DNS, subdomains, tech st
 """
 
 import os
-import sys
-import json
-import time
 import requests
 import dns.resolver
 import whois
@@ -15,8 +12,7 @@ import socket
 import ssl
 import hashlib
 import subprocess
-from datetime import datetime
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from colorama import Fore, Style
 import xml.etree.ElementTree as ET
@@ -43,11 +39,14 @@ class PassiveRecon:
         # DNS enumeration
         self.results['dns'] = self.get_dns_records()
         
-        # DNSDumpster integration
-        self.results['dnsdumpster'] = self.query_dnsdumpster()
+        # DNSDumpster integration (cached - enumerate_subdomains() reuses this
+        # result instead of querying DNSDumpster a second time)
+        self._dnsdumpster_cache = self.query_dnsdumpster()
+        self.results['dnsdumpster'] = self._dnsdumpster_cache
         
-        # Certificate transparency (crt.sh)
-        self.results['crt_sh'] = self.query_crt_sh()
+        # Certificate transparency / crt.sh (cached - same reasoning as above)
+        self._crt_sh_cache = self.query_crt_sh()
+        self.results['crt_sh'] = self._crt_sh_cache
         
         # SSL certificate information
         self.results['certificates'] = self.get_certificate_info()
@@ -179,15 +178,16 @@ class PassiveRecon:
         print(f"{Fore.YELLOW}[*] Enumerating subdomains...{Style.RESET_ALL}")
         subdomains = set()
         
-        # Certificate transparency logs (crt.sh)
-        crt_results = self.query_crt_sh()
+        # Certificate transparency logs (crt.sh) - reuse the result already
+        # fetched in run() instead of hitting crt.sh again
+        crt_results = getattr(self, '_crt_sh_cache', None) or self.query_crt_sh()
         subdomains.update(crt_results['subdomains'])
         
         # DNS bruteforce
         subdomains.update(self.dns_bruteforce())
         
-        # DNSDumpster integration
-        dnsdumpster_results = self.query_dnsdumpster()
+        # DNSDumpster integration - reuse the cached result from run()
+        dnsdumpster_results = getattr(self, '_dnsdumpster_cache', None) or self.query_dnsdumpster()
         if 'hosts' in dnsdumpster_results:
             for host in dnsdumpster_results['hosts']:
                 if host and len(host) > 0:
@@ -320,17 +320,20 @@ class PassiveRecon:
                                 results['san_domains'].add(san)
                                 results['subdomains'].add(san)
             
-            # Convert sets to lists for JSON serialization
-            results['subdomains'] = list(results['subdomains'])
-            results['issuers'] = list(results['issuers'])
-            results['san_domains'] = list(results['san_domains'])
-            
-            print(f"{Fore.GREEN}[+] Found {len(results['subdomains'])} subdomains via crt.sh{Style.RESET_ALL}")
-            print(f"{Fore.GREEN}[+] Found {len(results['certificates'])} certificates{Style.RESET_ALL}")
-            print(f"{Fore.GREEN}[+] Found {len(results['issuers'])} unique issuers{Style.RESET_ALL}")
-            
         except Exception as e:
             print(f"{Fore.RED}[-] crt.sh error: {e}{Style.RESET_ALL}")
+        
+        # Convert sets to lists for JSON serialization. This runs even if the
+        # request above failed or was interrupted partway through, so callers
+        # always get JSON-serializable types back instead of a raw set that
+        # slips through json.dump(..., default=str) as a mangled string.
+        results['subdomains'] = list(results['subdomains'])
+        results['issuers'] = list(results['issuers'])
+        results['san_domains'] = list(results['san_domains'])
+        
+        print(f"{Fore.GREEN}[+] Found {len(results['subdomains'])} subdomains via crt.sh{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}[+] Found {len(results['certificates'])} certificates{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}[+] Found {len(results['issuers'])} unique issuers{Style.RESET_ALL}")
         
         return results
     
@@ -422,12 +425,20 @@ class PassiveRecon:
         
         # WhatWeb (if available)
         try:
-            success, output, _ = subprocess.run(
-                f"whatweb --no-errors --log-xml=- {urls[0]}", 
-                shell=True, capture_output=True, text=True, timeout=30
+            # Two bugs fixed here:
+            # 1. subprocess.run() returns a CompletedProcess object, not a
+            #    3-tuple - unpacking it as (success, output, _) always raised
+            #    TypeError, which the except below silently swallowed, so
+            #    WhatWeb detection never actually ran.
+            # 2. The target URL was interpolated into a shell=True command
+            #    string, a command-injection vector. Switched to an argument
+            #    list with shell=False.
+            proc = subprocess.run(
+                ["whatweb", "--no-errors", "--log-xml=-", urls[0]],
+                shell=False, capture_output=True, text=True, timeout=30
             )
-            if success and output:
-                root = ET.fromstring(output)
+            if proc.returncode == 0 and proc.stdout:
+                root = ET.fromstring(proc.stdout)
                 plugins = set()
                 for plugin in root.iter('plugin'):
                     plugins.add(plugin.attrib.get('name'))

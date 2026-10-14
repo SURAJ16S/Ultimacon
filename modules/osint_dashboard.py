@@ -5,11 +5,9 @@ Provides a web-based dashboard for viewing and analyzing OSINT results
 """
 
 import os
-import json
 import time
 import threading
-from datetime import datetime
-from flask import Flask, render_template, jsonify, request, redirect, url_for
+from flask import Flask, render_template, jsonify
 from flask_socketio import SocketIO, emit
 import webbrowser
 from colorama import Fore, Style
@@ -95,6 +93,16 @@ class OsintDashboard:
     def run_dashboard(self, port=5000):
         """Run the dashboard server"""
         print(f"{Fore.CYAN}[*] Starting OSINT Dashboard on http://localhost:{port}{Style.RESET_ALL}")
+        
+        # Write templates/dashboard.html to disk before serving. This used
+        # to only happen in run() (below), but core_manager.py actually
+        # starts the dashboard by calling run_dashboard() directly in a
+        # background thread and never calls run() - so the template file
+        # never got created, and the '/' route's render_template() call
+        # would raise TemplateNotFound on the very first request. Calling it
+        # here (it's idempotent - safe to call more than once) guarantees
+        # the template exists no matter which entry point is used.
+        self.create_templates()
         
         # Open browser automatically
         def open_browser():

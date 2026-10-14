@@ -5,14 +5,10 @@ Performs active reconnaissance including port scanning, directory bruteforcing, 
 """
 
 import os
-import sys
-import json
 import time
 import requests
 import subprocess
 import socket
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 from colorama import Fore, Style
 import nmap
@@ -73,10 +69,20 @@ class ActiveRecon:
             except Exception:
                 continue
         
-        # Nmap scan (if available)
+        # Nmap scan (if available). Nmap covers the same common ports as the
+        # quick TCP connect scan above plus its own default port list, so
+        # merge by port number instead of concatenating - otherwise a port
+        # like 80 or 443 shows up twice in the report with two different
+        # service-name spellings ('HTTP' from the quick scan vs 'http' from
+        # Nmap), once per method, which is misleading.
         nmap_results = self.nmap_scan()
         if nmap_results:
-            open_ports.extend(nmap_results)
+            merged = {entry['port']: entry for entry in open_ports}
+            for entry in nmap_results:
+                # Prefer Nmap's result for a given port since it carries
+                # richer service/version/product data than the raw connect scan.
+                merged[entry['port']] = entry
+            open_ports = sorted(merged.values(), key=lambda e: e['port'])
         
         return open_ports
     
@@ -195,11 +201,17 @@ class ActiveRecon:
             return []
         
         try:
-            cmd = f"gobuster dir -u {base_url} -w {wordlist} -t {self.config.get('threads', 50)} --no-error"
+            # Built as an argument list (shell=False) rather than an
+            # interpolated shell string: base_url comes from the scan target,
+            # which is attacker/user-controlled input, so formatting it
+            # straight into a shell=True command string was a command
+            # injection vector (e.g. a target of "x.com; rm -rf ~" would run).
+            cmd = ["gobuster", "dir", "-u", base_url, "-w", wordlist,
+                   "-t", str(self.config.get('threads', 50)), "--no-error"]
             if self.config.get('stealth_mode'):
-                cmd += " --delay 2s"
+                cmd += ["--delay", "2s"]
             
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300)
+            result = subprocess.run(cmd, shell=False, capture_output=True, text=True, timeout=300)
             
             if result.returncode == 0:
                 lines = result.stdout.strip().split('\n')
@@ -228,11 +240,15 @@ class ActiveRecon:
             return []
         
         try:
-            cmd = f"ffuf -u {base_url}/FUZZ -w {wordlist} -mc 200,204,301,302,307,401,403 -t {self.config.get('threads', 50)}"
+            # Same command-injection fix as gobuster_scan() above: argument
+            # list + shell=False instead of an interpolated shell string.
+            cmd = ["ffuf", "-u", f"{base_url}/FUZZ", "-w", wordlist,
+                   "-mc", "200,204,301,302,307,401,403",
+                   "-t", str(self.config.get('threads', 50))]
             if self.config.get('stealth_mode'):
-                cmd += " -rate 100"
+                cmd += ["-rate", "100"]
             
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300)
+            result = subprocess.run(cmd, shell=False, capture_output=True, text=True, timeout=300)
             
             if result.returncode == 0:
                 lines = result.stdout.strip().split('\n')

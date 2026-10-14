@@ -4,24 +4,11 @@ Subdomain Takeover & Misconfiguration Detection Module
 Detects potential subdomain takeover opportunities and cloud bucket misconfigurations
 """
 
-import os
-import sys
 import json
-import time
 import requests
 import dns.resolver
-import socket
-import ssl
 import re
-from urllib.parse import urljoin, urlparse
-from typing import Dict, List, Any, Optional, Tuple
 from colorama import Fore, Style
-import asyncio
-import aiohttp
-import aiofiles
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import boto3
-from botocore.exceptions import ClientError, NoCredentialsError
 from pathlib import Path
 
 class SubdomainTakeover:
@@ -248,25 +235,16 @@ class SubdomainTakeover:
         print(f"{Fore.YELLOW}[*] Checking DNS-based takeovers...{Style.RESET_ALL}")
         results = []
         
+        # Note: pattern-based "CNAME points at a known vulnerable service"
+        # matching is handled by check_cname_takeovers()/analyze_cname_takeover()
+        # below, which does the identical match. It used to be duplicated
+        # here too, so every such finding was reported twice (once in
+        # dns_checks, once in cname_checks) and double-counted in the final
+        # takeover_candidates summary. This method now focuses on its
+        # distinct job: detecting dangling CNAMEs (pointing to a domain that
+        # doesn't resolve at all), which isn't covered anywhere else.
         for subdomain in subdomains:
             try:
-                # Check CNAME records
-                cname_records = self.get_cname_records(subdomain)
-                for cname in cname_records:
-                    for service, pattern_info in self.takeover_patterns.items():
-                        for pattern in pattern_info['patterns']:
-                            if re.search(pattern, cname, re.IGNORECASE):
-                                results.append({
-                                    'subdomain': subdomain,
-                                    'cname': cname,
-                                    'service': service,
-                                    'type': 'cname_takeover',
-                                    'severity': 'high',
-                                    'description': f'CNAME points to {service} service',
-                                    'exploitation': self.get_exploitation_guide(service)
-                                })
-                
-                # Check for dangling CNAMEs
                 dangling_cname = self.check_dangling_cname(subdomain)
                 if dangling_cname:
                     results.append(dangling_cname)
@@ -742,185 +720,95 @@ class SubdomainTakeover:
             pass
         return None
     
-    def test_github_pages(self, subdomain):
-        """Test GitHub Pages for takeover"""
+    def _check_platform_takeover(self, subdomain, service_key, takeover_type):
+        """Shared, correct platform-takeover check.
+
+        The previous per-platform test_* methods for GitHub Pages, Heroku,
+        Vercel, Netlify, Cloudflare Pages, Firebase, Shopify, WordPress,
+        Squarespace and Wix each re-implemented this independently - and six
+        of them (Cloudflare Pages, Firebase, Shopify, WordPress, Squarespace,
+        Wix) flagged ANY subdomain that returned a plain HTTP 404 as a
+        takeover candidate for that specific platform, with no check that
+        the subdomain pointed at that platform at all. In practice almost
+        any subdomain with no vhost configured returns a 404, so a single
+        harmless 404 page got reported as a Shopify AND WordPress AND Wix
+        AND Squarespace AND Firebase AND Cloudflare Pages takeover
+        simultaneously - a serious false-positive bug.
+
+        This version uses the CNAME patterns and response indicators that
+        are already defined in self.takeover_patterns (and were previously
+        defined but never actually consulted by these methods): it only
+        reports a candidate when the subdomain's CNAME points at the
+        platform's known domain pattern AND the HTTP response contains that
+        platform's known "not claimed" indicator text.
+        """
+        pattern_info = self.takeover_patterns[service_key]
         try:
+            cname_records = self.get_cname_records(subdomain)
+            if not any(
+                re.search(pattern, cname, re.IGNORECASE)
+                for cname in cname_records
+                for pattern in pattern_info['patterns']
+            ):
+                # CNAME doesn't point at this platform at all - not a candidate.
+                return None
+            
             url = f"http://{subdomain}"
             resp = self.session.get(url, timeout=10)
+            body = resp.text.lower()
             
-            if resp.status_code == 404 and 'github' in resp.text.lower():
+            if any(indicator.lower() in body for indicator in pattern_info['indicators']):
                 return {
                     'subdomain': subdomain,
-                    'type': 'github_pages_takeover',
+                    'cname': cname_records,
+                    'type': takeover_type,
                     'severity': 'high',
-                    'description': 'GitHub Pages site not found',
-                    'exploitation': 'Create a GitHub repository with the same name to take over'
+                    'description': f'CNAME points to an unclaimed {service_key} resource',
+                    'exploitation': self.get_exploitation_guide(service_key)
                 }
         except Exception:
             pass
         return None
+    
+    def test_github_pages(self, subdomain):
+        """Test GitHub Pages for takeover"""
+        return self._check_platform_takeover(subdomain, 'github_pages', 'github_pages_takeover')
     
     def test_heroku_app(self, subdomain):
         """Test Heroku app for takeover"""
-        try:
-            url = f"http://{subdomain}"
-            resp = self.session.get(url, timeout=10)
-            
-            if 'no such app' in resp.text.lower():
-                return {
-                    'subdomain': subdomain,
-                    'type': 'heroku_takeover',
-                    'severity': 'high',
-                    'description': 'Heroku app not found',
-                    'exploitation': 'Create a Heroku app with the same name to take over'
-                }
-        except Exception:
-            pass
-        return None
+        return self._check_platform_takeover(subdomain, 'heroku', 'heroku_takeover')
     
     def test_vercel_deployment(self, subdomain):
         """Test Vercel deployment for takeover"""
-        try:
-            url = f"http://{subdomain}"
-            resp = self.session.get(url, timeout=10)
-            
-            if resp.status_code == 404 and 'vercel' in resp.text.lower():
-                return {
-                    'subdomain': subdomain,
-                    'type': 'vercel_takeover',
-                    'severity': 'high',
-                    'description': 'Vercel deployment not found',
-                    'exploitation': 'Create a Vercel deployment with the same name to take over'
-                }
-        except Exception:
-            pass
-        return None
+        return self._check_platform_takeover(subdomain, 'vercel', 'vercel_takeover')
     
     def test_netlify_site(self, subdomain):
         """Test Netlify site for takeover"""
-        try:
-            url = f"http://{subdomain}"
-            resp = self.session.get(url, timeout=10)
-            
-            if resp.status_code == 404 and 'netlify' in resp.text.lower():
-                return {
-                    'subdomain': subdomain,
-                    'type': 'netlify_takeover',
-                    'severity': 'high',
-                    'description': 'Netlify site not found',
-                    'exploitation': 'Create a Netlify site with the same name to take over'
-                }
-        except Exception:
-            pass
-        return None
+        return self._check_platform_takeover(subdomain, 'netlify', 'netlify_takeover')
     
     def test_cloudflare_pages(self, subdomain):
         """Test Cloudflare Pages for takeover"""
-        try:
-            url = f"http://{subdomain}"
-            resp = self.session.get(url, timeout=10)
-            
-            if resp.status_code == 404:
-                return {
-                    'subdomain': subdomain,
-                    'type': 'cloudflare_pages_takeover',
-                    'severity': 'high',
-                    'description': 'Cloudflare Pages site not found',
-                    'exploitation': 'Create a Cloudflare Pages site with the same name to take over'
-                }
-        except Exception:
-            pass
-        return None
+        return self._check_platform_takeover(subdomain, 'cloudflare_pages', 'cloudflare_pages_takeover')
     
     def test_firebase_hosting(self, subdomain):
         """Test Firebase Hosting for takeover"""
-        try:
-            url = f"http://{subdomain}"
-            resp = self.session.get(url, timeout=10)
-            
-            if resp.status_code == 404:
-                return {
-                    'subdomain': subdomain,
-                    'type': 'firebase_takeover',
-                    'severity': 'high',
-                    'description': 'Firebase Hosting site not found',
-                    'exploitation': 'Create a Firebase Hosting site with the same name to take over'
-                }
-        except Exception:
-            pass
-        return None
+        return self._check_platform_takeover(subdomain, 'firebase', 'firebase_takeover')
     
     def test_shopify_store(self, subdomain):
         """Test Shopify store for takeover"""
-        try:
-            url = f"http://{subdomain}"
-            resp = self.session.get(url, timeout=10)
-            
-            if resp.status_code == 404:
-                return {
-                    'subdomain': subdomain,
-                    'type': 'shopify_takeover',
-                    'severity': 'high',
-                    'description': 'Shopify store not found',
-                    'exploitation': 'Create a Shopify store with the same name to take over'
-                }
-        except Exception:
-            pass
-        return None
+        return self._check_platform_takeover(subdomain, 'shopify', 'shopify_takeover')
     
     def test_wordpress_site(self, subdomain):
         """Test WordPress site for takeover"""
-        try:
-            url = f"http://{subdomain}"
-            resp = self.session.get(url, timeout=10)
-            
-            if resp.status_code == 404:
-                return {
-                    'subdomain': subdomain,
-                    'type': 'wordpress_takeover',
-                    'severity': 'high',
-                    'description': 'WordPress site not found',
-                    'exploitation': 'Create a WordPress site with the same name to take over'
-                }
-        except Exception:
-            pass
-        return None
+        return self._check_platform_takeover(subdomain, 'wordpress', 'wordpress_takeover')
     
     def test_squarespace_site(self, subdomain):
         """Test Squarespace site for takeover"""
-        try:
-            url = f"http://{subdomain}"
-            resp = self.session.get(url, timeout=10)
-            
-            if resp.status_code == 404:
-                return {
-                    'subdomain': subdomain,
-                    'type': 'squarespace_takeover',
-                    'severity': 'high',
-                    'description': 'Squarespace site not found',
-                    'exploitation': 'Create a Squarespace site with the same name to take over'
-                }
-        except Exception:
-            pass
-        return None
+        return self._check_platform_takeover(subdomain, 'squarespace', 'squarespace_takeover')
     
     def test_wix_site(self, subdomain):
         """Test Wix site for takeover"""
-        try:
-            url = f"http://{subdomain}"
-            resp = self.session.get(url, timeout=10)
-            
-            if resp.status_code == 404:
-                return {
-                    'subdomain': subdomain,
-                    'type': 'wix_takeover',
-                    'severity': 'high',
-                    'description': 'Wix site not found',
-                    'exploitation': 'Create a Wix site with the same name to take over'
-                }
-        except Exception:
-            pass
-        return None
+        return self._check_platform_takeover(subdomain, 'wix', 'wix_takeover')
     
     def get_exploitation_guide(self, service):
         """Get exploitation guide for a service"""

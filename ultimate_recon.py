@@ -10,32 +10,15 @@ import os
 import sys
 import json
 import time
-import signal
-import threading
 import subprocess
 import requests
-import dns.resolver
-import whois
-import socket
-import ssl
-import re
 import argparse
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urljoin
 import ipaddress
-import nmap
-import shodan
-import censys
-from pathlib import Path
 import yaml
 import xml.etree.ElementTree as ET
-from colorama import init, Fore, Back, Style
-import tqdm
-import asyncio
-import aiohttp
-import aiodns
-import aiofiles
+from colorama import init, Fore, Style
 import hashlib
 from bs4 import BeautifulSoup
 
@@ -180,7 +163,7 @@ class UltimateRecon:
                 with open(config_file, 'r') as f:
                     file_keys = json.load(f)
                     api_keys.update(file_keys)
-            except:
+            except Exception:  # narrowed from bare except: - a bare except also caught KeyboardInterrupt/SystemExit, making Ctrl+C unreliable during scans
                 pass
         
         return api_keys
@@ -374,11 +357,21 @@ class UltimateRecon:
         return base_time * (task_count / 100)  # Scale with task count
     
     def run_command(self, command, timeout=300):
-        """Run shell command with timeout and error handling"""
+        """Run a command with timeout and error handling.
+
+        Accepts either a list of args (preferred - runs with shell=False, no
+        injection risk) or a plain string (runs with shell=True, so only
+        pass a string here when it contains no attacker-controlled input,
+        e.g. a fixed tool name). Callers that build a command from the scan
+        target should pass a list instead - see the WhatWeb and Nmap call
+        sites below for the fix that was applied after this helper was
+        previously used with f-string-interpolated target strings, which was
+        a command-injection vector.
+        """
         try:
             result = subprocess.run(
                 command,
-                shell=True,
+                shell=isinstance(command, str),
                 capture_output=True,
                 text=True,
                 timeout=timeout
@@ -397,7 +390,7 @@ class UltimateRecon:
         print(f"{Fore.BLUE}[*] Checking tool availability...{Style.RESET_ALL}")
         
         for tool in tools:
-            success, _, _ = self.run_command(f"which {tool}", timeout=10)
+            success, _, _ = self.run_command(["which", tool], timeout=10)
             if success:
                 available_tools.append(tool)
                 print(f"{Fore.GREEN}[+] {tool}: Available{Style.RESET_ALL}")
@@ -447,8 +440,8 @@ class UltimateRecon:
             print(f"{Fore.RED}[!] Safety check failed - aborting reconnaissance{Style.RESET_ALL}")
             return False
         
-        # Check tool availability
-        available_tools = self.check_tool_availability()
+        # Check tool availability (cached for reuse elsewhere in the scan)
+        self.available_tools = self.check_tool_availability()
         
         # Initialize results
         self.results = {
@@ -458,7 +451,9 @@ class UltimateRecon:
             'certificate_analysis': {},
             'vulnerability_scan': {},
             'osint': {},
-            'summary': {}
+            'summary': {
+                'available_tools': self.available_tools
+            }
         }
         
         # Start time tracking
@@ -545,7 +540,7 @@ class UltimateRecon:
             ip = ipaddress.ip_address(self.target)
             if ip.is_private:
                 safety_issues.append("Private IP address detected")
-        except:
+        except Exception:  # narrowed from bare except: - a bare except also caught KeyboardInterrupt/SystemExit, making Ctrl+C unreliable during scans
             pass
         
         # Check for government domains
@@ -732,7 +727,9 @@ class UltimateRecon:
                 continue
         # 2. WhatWeb CLI (if available)
         whatweb_path = self.tools_config.get('whatweb', {}).get('path', 'whatweb')
-        success, output, _ = self.run_command(f"{whatweb_path} --no-errors --log-xml=- {urls[0]}", timeout=30)
+        success, output, _ = self.run_command(
+            [whatweb_path, "--no-errors", "--log-xml=-", urls[0]], timeout=30
+        )
         if success and output:
             try:
                 root = ET.fromstring(output)
@@ -762,8 +759,11 @@ class UltimateRecon:
             except Exception:
                 pass
         # 4. Nmap HTTP NSE scripts (if nmap is available)
-        if 'nmap' in self.check_tool_availability():
-            nmap_cmd = f"nmap -p 80,443 --script=http-enum,http-title,http-headers {self.target} -oX -"
+        available_tools = getattr(self, 'available_tools', None) or self.check_tool_availability()
+        if 'nmap' in available_tools:
+            nmap_cmd = ["nmap", "-p", "80,443",
+                        "--script=http-enum,http-title,http-headers",
+                        self.target, "-oX", "-"]
             success, output, _ = self.run_command(nmap_cmd, timeout=60)
             if success and output:
                 try:

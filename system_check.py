@@ -5,13 +5,11 @@ Analyzes system specifications and provides configuration recommendations
 """
 
 import os
-import sys
 import platform
 import psutil
-import subprocess
 import requests
+import shutil
 import time
-from pathlib import Path
 from colorama import init, Fore, Style
 import json
 
@@ -64,7 +62,8 @@ class SystemChecker:
         }
         
         # Disk
-        disk = psutil.disk_usage('/')
+        # See setup.py for why '/' doesn't work on Windows here.
+        disk = psutil.disk_usage(os.path.abspath(os.sep))
         disk_info = {
             'total_gb': round(disk.total / (1024**3), 2),
             'free_gb': round(disk.free / (1024**3), 2),
@@ -278,7 +277,7 @@ class SystemChecker:
                                 print(f"  ✅ {service} (config)")
                             if service in missing_keys:
                                 missing_keys.remove(service)
-            except:
+            except Exception:  # narrowed from bare except: - a bare except also caught KeyboardInterrupt/SystemExit, making Ctrl+C unreliable during scans
                 pass
         
         for service in missing_keys:

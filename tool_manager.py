@@ -5,7 +5,6 @@ Automatically checks and installs required external tools
 """
 
 import os
-import sys
 import subprocess
 import platform
 import shutil
@@ -14,8 +13,6 @@ import zipfile
 import tarfile
 from pathlib import Path
 from colorama import init, Fore, Style
-import yaml
-import json
 
 # Initialize colorama
 init(autoreset=True)
@@ -24,7 +21,14 @@ class ToolManager:
     """Manages external tool dependencies"""
     
     def __init__(self):
-        self.system = platform.system().lower()
+        # platform.system() returns 'Darwin' on macOS, but every tool's
+        # urls/package_names dict below is keyed 'macos', not 'darwin'. That
+        # mismatch meant tool_config['urls'].get(self.system) always missed
+        # on macOS and direct binary installation silently failed with "No
+        # download URL for <tool> on darwin" even though a macOS URL is
+        # defined in the config - just unreachable under the wrong key.
+        detected_system = platform.system().lower()
+        self.system = 'macos' if detected_system == 'darwin' else detected_system
         self.architecture = platform.machine().lower()
         self.tools_config = self.load_tools_config()
         self.install_path = self.get_install_path()
@@ -228,9 +232,9 @@ class ToolManager:
                         return 'pacman'
                     else:
                         return 'apt'  # Default to apt
-            except:
+            except Exception:  # narrowed from bare except: - a bare except also caught KeyboardInterrupt/SystemExit, making Ctrl+C unreliable during scans
                 return 'apt'
-        elif self.system == 'darwin':  # macOS
+        elif self.system == 'macos':
             return 'brew'
         else:
             return None
@@ -245,7 +249,25 @@ class ToolManager:
         if not package_manager:
             return False, "No package manager available"
         
-        package_name = tool_config['package_names'].get(package_manager)
+        # Each tool's 'package_names' dict (see load_tools_config above) is
+        # keyed by distro/OS name - 'ubuntu', 'debian', 'centos', 'fedora',
+        # 'macos' - but get_package_manager() returns the package manager's
+        # own name - 'apt', 'yum', 'pacman', 'brew', 'chocolatey'. Looking
+        # package_names up directly by package_manager therefore never
+        # matched any key, for any tool, on any OS, so this method always
+        # fell through to "No package name for <tool> on <manager>" and the
+        # install silently relied on the manual-download fallback every
+        # time. Map the package manager to a representative distro key
+        # before looking it up.
+        package_manager_to_distro_key = {
+            'apt': 'ubuntu',
+            'yum': 'fedora',
+            'pacman': 'arch',
+            'brew': 'macos',
+            'chocolatey': 'windows',
+        }
+        distro_key = package_manager_to_distro_key.get(package_manager, package_manager)
+        package_name = tool_config['package_names'].get(distro_key)
         if not package_name:
             return False, f"No package name for {tool_name} on {package_manager}"
         
@@ -320,16 +342,26 @@ class ToolManager:
             extract_path = self.install_path / tool_name
             extract_path.mkdir(exist_ok=True)
             
-            # Extract based on file type
-            if file_path.suffix == '.zip':
-                with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                    zip_ref.extractall(extract_path)
-            elif file_path.suffix in ['.tar.gz', '.tgz']:
+            # Extract based on file type. Path.suffix only returns the LAST
+            # extension component - for "nmap-7.94.tar.bz2" it's '.bz2', not
+            # '.tar.bz2'; for "ffuf_..._linux_amd64.tar.gz" it's '.gz', not
+            # '.tar.gz'. So the '.tar.gz'/'.tar.bz2' branches below never
+            # matched any real tarball download, and every such archive fell
+            # through to the "assume it's a raw binary" branch, which copied
+            # the still-compressed, unextracted archive file itself and
+            # chmod +x'd it as if it were the tool. Using the filename
+            # string directly (and Path.suffixes for the .tgz/.zip cases)
+            # fixes the detection.
+            filename_lower = file_path.name.lower()
+            if filename_lower.endswith('.tar.gz') or filename_lower.endswith('.tgz'):
                 with tarfile.open(file_path, 'r:gz') as tar_ref:
                     tar_ref.extractall(extract_path)
-            elif file_path.suffix == '.tar.bz2':
+            elif filename_lower.endswith('.tar.bz2'):
                 with tarfile.open(file_path, 'r:bz2') as tar_ref:
                     tar_ref.extractall(extract_path)
+            elif filename_lower.endswith('.zip'):
+                with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                    zip_ref.extractall(extract_path)
             else:
                 # Assume it's a binary file
                 binary_path = self.install_path / tool_name
@@ -374,6 +406,16 @@ class ToolManager:
         """Add directory to PATH"""
         path_str = str(path)
         
+        # Update the current process's PATH immediately. The branches below
+        # only persist the change to the Windows registry or a shell profile
+        # file for FUTURE shells - a tool installed mid-run otherwise stays
+        # invisible to this same run (e.g. check_tool_availability() right
+        # after installing it would still report it missing) until the
+        # whole script is restarted in a new shell.
+        current_path = os.environ.get('PATH', '')
+        if path_str not in current_path.split(os.pathsep):
+            os.environ['PATH'] = f"{path_str}{os.pathsep}{current_path}"
+        
         if self.system == 'windows':
             # Add to Windows PATH
             try:
@@ -381,7 +423,7 @@ class ToolManager:
                 if path_str not in current_path:
                     new_path = f"{current_path};{path_str}"
                     subprocess.run(['setx', 'PATH', new_path], check=True)
-            except:
+            except Exception:  # narrowed from bare except: - a bare except also caught KeyboardInterrupt/SystemExit, making Ctrl+C unreliable during scans
                 print(f"{Fore.YELLOW}[!] Please manually add {path_str} to your PATH{Style.RESET_ALL}")
         else:
             # Add to shell profile
@@ -396,7 +438,7 @@ class ToolManager:
                         with open(shell_profile, 'a') as f:
                             f.write(f'\n# Ultimate Reconnaissance Tools\n{path_line}\n')
                         print(f"{Fore.GREEN}[+] Added {path_str} to {shell_profile}{Style.RESET_ALL}")
-                except:
+                except Exception:  # narrowed from bare except: - a bare except also caught KeyboardInterrupt/SystemExit, making Ctrl+C unreliable during scans
                     print(f"{Fore.YELLOW}[!] Please manually add {path_str} to your PATH{Style.RESET_ALL}")
     
     def get_shell_profile(self):

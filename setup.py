@@ -5,18 +5,14 @@ Automated system detection, configuration, and fallback mechanisms
 """
 
 import os
-import sys
 import json
 import platform
 import psutil
-import shutil
-import subprocess
 import requests
 import getpass
 from pathlib import Path
 from colorama import init, Fore, Style
 import yaml
-import socket
 import time
 
 # Initialize colorama
@@ -50,8 +46,13 @@ class SystemAnalyzer:
             'percent_used': memory.percent
         }
         
-        # Disk Information
-        disk = psutil.disk_usage('/')
+        # Disk Information. psutil.disk_usage('/') is Unix-specific - '/' is
+        # not a valid path on Windows (psutil.disk_usage expects something
+        # like 'C:\\' there), so this raised an uncaught error and crashed
+        # system analysis entirely on Windows. os.path.abspath(os.sep)
+        # resolves to the right root on each platform ('/' on Unix, the
+        # current drive's root like 'C:\\' on Windows).
+        disk = psutil.disk_usage(os.path.abspath(os.sep))
         self.specs['disk'] = {
             'total_gb': round(disk.total / (1024**3), 2),
             'free_gb': round(disk.free / (1024**3), 2),
@@ -97,7 +98,7 @@ class SystemAnalyzer:
                     download_time = time.time() - start_time
                     network_info['download_speed'] = round(1024 / download_time / 1024, 2)  # MB/s
                     network_info['speed_test'] = True
-        except:
+        except Exception:  # narrowed from bare except: - a bare except also caught KeyboardInterrupt/SystemExit, making Ctrl+C unreliable during scans
             network_info['connected'] = False
         
         return network_info
@@ -466,7 +467,7 @@ class ConfigurationManager:
                             print(f"  ✅ Found in existing configuration")
                             self.api_keys[service] = existing_keys[service]
                             continue
-                except:
+                except Exception:  # narrowed from bare except: - a bare except also caught KeyboardInterrupt/SystemExit, making Ctrl+C unreliable during scans
                     pass
             
             # Ask for API key
