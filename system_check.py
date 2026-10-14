@@ -144,17 +144,24 @@ class SystemChecker:
         """Check Python dependencies"""
         print(f"{Fore.YELLOW}[*] Checking Python dependencies...{Style.RESET_ALL}")
         
-        required_packages = [
-            'requests', 'dnspython', 'python-whois', 'beautifulsoup4',
-            'colorama', 'pyyaml', 'psutil', 'aiohttp', 'aiodns'
-        ]
+        package_modules = {
+            'requests': 'requests',
+            'dnspython': 'dns',
+            'python-whois': 'whois',
+            'beautifulsoup4': 'bs4',
+            'colorama': 'colorama',
+            'pyyaml': 'yaml',
+            'psutil': 'psutil',
+            'flask': 'flask',
+            'flask-socketio': 'flask_socketio'
+        }
         
         missing_packages = []
         installed_packages = []
         
-        for package in required_packages:
+        for package, module in package_modules.items():
             try:
-                __import__(package.replace('-', '_'))
+                __import__(module)
                 installed_packages.append(package)
                 print(f"  ✅ {package}")
             except ImportError:
